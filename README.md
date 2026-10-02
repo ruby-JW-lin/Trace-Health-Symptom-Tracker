@@ -13,7 +13,7 @@ npm run dev
 
 Open [http://127.0.0.1:43123](http://127.0.0.1:43123).
 
-Create an account on the first screen. The password is stored only as a session in this browser; it is not sent to a server. Sample cases for Sophie and Maya are already loaded after you sign in.
+Create an account on the first screen. Trace starts a profile in your name with no cases, and each email keeps its own history in this browser. Passwords stay on this device and are not sent to a server.
 
 ```bash
 npm run build

@@ -52,103 +52,101 @@ type HealthCase = {
   cover?: "skin" | "stomach" | "arm";
 };
 
-const profiles: Profile[] = [
-  { id: "sophie", name: "Sophie", relationship: "Daughter", initials: "S", color: "coral", child: true },
-  { id: "me", name: "Maya", relationship: "Myself", initials: "M", color: "sage" },
-];
-
-const starterEpisodes: Record<string, Episode[]> = {
-  sophie: [
-    {
-      id: 1,
-      caseId: "facial-irritation",
-      date: "Today, 8:40 am",
-      title: "Red, itchy patches",
-      place: "Inside elbows",
-      severity: 5,
-      detail: "Sophie said it felt itchy after getting dressed. Skin looked dry and pink.",
-      tags: ["Product A", "Poor sleep"],
-      treatment: "Fragrance-free moisturizer",
-    },
-    {
-      id: 2,
-      caseId: "facial-irritation",
-      date: "May 18, 7:15 pm",
-      title: "Dryness and irritation",
-      place: "Behind knees",
-      severity: 4,
-      detail: "Noticed after bath time. She said it felt warm, but not painful.",
-      tags: ["Product A", "Bath"],
-      treatment: "Cool compress",
-    },
-    {
-      id: 3,
-      caseId: "facial-irritation",
-      date: "May 11, 4:30 pm",
-      title: "Small red patches",
-      place: "Arms and wrists",
-      severity: 3,
-      detail: "Appeared in the afternoon after playing outside.",
-      tags: ["Product A", "Warm weather"],
-      treatment: "Moisturizer",
-    },
-  ],
-  me: [
-    {
-      id: 4,
-      caseId: "headaches",
-      date: "May 20, 9:10 pm",
-      title: "Tension headache",
-      place: "Temples",
-      severity: 4,
-      detail: "Gradual headache after a long workday.",
-      tags: ["Stress", "Low sleep"],
-      treatment: "Water and rest",
-    },
-  ],
+type StoredAccount = Account & { password: string };
+type Workspace = {
+  profiles: Profile[];
+  activeProfileId: string;
+  cases: HealthCase[];
+  episodes: Record<string, Episode[]>;
 };
 
-const starterCases: HealthCase[] = [
-  {
-    id: "facial-irritation", profileId: "sophie", title: "Recurring facial irritation",
-    started: "March 12, 2025", updated: "Today", updatedOrder: 300, entries: 6, status: "Active",
-    concern: "Recurring areas of dry, red and itchy skin around the cheeks and jaw.",
-    locations: ["Cheeks", "Jaw", "Inside elbows"], symptoms: ["Redness", "Itching", "Dryness", "Warmth"],
-    severity: "3–6 / 10", treatments: ["Fragrance-free moisturizer", "Cool compress"],
-    changes: ["Product A", "Warm weather", "Poor sleep"],
-    patterns: ["Irritation was recorded 3 times after Product A was used.", "Entries are more frequent in the evening."],
-    cover: "skin",
-  },
-  {
-    id: "stomach-pain", profileId: "sophie", title: "Stomach pain",
-    started: "September 2, 2024", updated: "Sep 18", updatedOrder: 200, entries: 4, status: "Improving",
-    concern: "Intermittent stomach discomfort, usually after lunch.",
-    locations: ["Lower abdomen"], symptoms: ["Cramping", "Bloating"], severity: "2–5 / 10",
-    treatments: ["Rest", "Warm compress"], changes: ["School lunches", "Dairy"],
-    patterns: ["Three entries were recorded on school days."], cover: "stomach",
-  },
-  {
-    id: "arm-rash", profileId: "sophie", title: "Rash on arm",
-    started: "August 14, 2024", updated: "Aug 21", updatedOrder: 100, entries: 3, status: "Resolved",
-    concern: "A small itchy rash on the left forearm.",
-    locations: ["Left forearm"], symptoms: ["Small bumps", "Itching"], severity: "2–4 / 10",
-    treatments: ["Moisturizer"], changes: ["Outdoor activity"], patterns: ["No repeated pattern was found."], cover: "arm",
-  },
-  {
-    id: "headaches", profileId: "me", title: "Recurring tension headaches",
-    started: "May 3, 2025", updated: "May 20", updatedOrder: 250, entries: 3, status: "Active",
-    concern: "Headaches that build gradually on busy workdays.",
-    locations: ["Temples", "Forehead"], symptoms: ["Pressure", "Fatigue"], severity: "3–5 / 10",
-    treatments: ["Water", "Rest", "Screen breaks"], changes: ["Stress", "Low sleep"],
-    patterns: ["Low sleep was recorded alongside two headache entries."],
-  },
-  {
-    id: "ankle-strain", profileId: "me", title: "Ankle strain",
-    started: "January 8, 2025", updated: "Jan 24", updatedOrder: 50, entries: 5, status: "Resolved",
-    concern: "Right ankle pain after running.", locations: ["Right ankle"], symptoms: ["Aching", "Swelling"],
-    severity: "2–6 / 10", treatments: ["Rest", "Ice"], changes: ["Long run"], patterns: ["Symptoms improved with rest."],
-  },
-];
+const privacyDefaults: PrivacyPreferences = { lockOnClose: true, stripPhotoMetadata: true, expiringShareLinks: true };
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readAccounts(): StoredAccount[] {
+  const accounts = readJson<StoredAccount[]>("trace-accounts", []);
+  if (accounts.length) return accounts;
+  const legacy = readJson<Account | null>("trace-account", null);
+  if (!legacy?.email || !legacy.name) return [];
+  return [{ name: legacy.name, email: legacy.email.toLowerCase(), password: "" }];
+}
+
+function writeAccounts(accounts: StoredAccount[]) {
+  localStorage.setItem("trace-accounts", JSON.stringify(accounts));
+  const latest = accounts[accounts.length - 1];
+  if (latest) localStorage.setItem("trace-account", JSON.stringify({ name: latest.name, email: latest.email }));
+}
+
+function privacyKey(email: string) {
+  return `trace-privacy:${email}`;
+}
+
+function workspaceKey(email: string) {
+  return `trace-workspace:${email}`;
+}
+
+function persistentKey(email: string) {
+  return `trace-persistent-session:${email}`;
+}
+
+function onboardingKey(email: string) {
+  return `trace-onboarding:${email}`;
+}
+
+function selfProfile(account: Account): Profile {
+  const name = account.name.trim();
+  return {
+    id: "me",
+    name,
+    relationship: "Myself",
+    initials: (name[0] || "M").toUpperCase(),
+    color: "sage",
+  };
+}
+
+function freshWorkspace(account: Account): Workspace {
+  const profile = selfProfile(account);
+  return { profiles: [profile], activeProfileId: profile.id, cases: [], episodes: { [profile.id]: [] } };
+}
+
+function loadWorkspace(account: Account): Workspace {
+  const saved = readJson<Workspace | null>(workspaceKey(account.email), null);
+  if (!saved?.profiles?.length) return freshWorkspace(account);
+  const active = saved.profiles.find((profile) => profile.id === saved.activeProfileId) || saved.profiles[0];
+  return { ...saved, activeProfileId: active.id, cases: saved.cases || [], episodes: saved.episodes || {} };
+}
+
+function loadPrivacy(email: string): PrivacyPreferences {
+  return { ...privacyDefaults, ...readJson<Partial<PrivacyPreferences>>(privacyKey(email), {}) };
+}
+
+function sessionAccount(): Account | null {
+  const accounts = readAccounts();
+  const sessionActive = sessionStorage.getItem("trace-session") === "active";
+  if (sessionActive) {
+    const email = sessionStorage.getItem("trace-session-email") || readJson<Account | null>("trace-account", null)?.email?.toLowerCase();
+    const match = accounts.find((account) => account.email === email);
+    if (match) return { name: match.name, email: match.email };
+  }
+  const persistent = accounts.find((account) => localStorage.getItem(persistentKey(account.email)) === "active" && !loadPrivacy(account.email).lockOnClose);
+  if (persistent) return { name: persistent.name, email: persistent.email };
+  return null;
+}
+
+function startSession(account: Account, persistent: boolean) {
+  sessionStorage.setItem("trace-session", "active");
+  sessionStorage.setItem("trace-session-email", account.email);
+  if (persistent) localStorage.setItem(persistentKey(account.email), "active");
+  else localStorage.removeItem(persistentKey(account.email));
+}
 
 const navItems: Page[] = ["Home", "Timeline", "Patterns", "My Cases", "Case Summaries"];
 
@@ -364,12 +362,13 @@ function Sidebar({ page, active, open, onPage, onClose, onProfile, onPrivacy }: 
   );
 }
 
-function Home({ profile, cases, onPage, onOpenCase, onNewCase }: { profile: Profile; cases: HealthCase[]; onPage: (page: Page) => void; onOpenCase: (healthCase: HealthCase) => void; onNewCase: () => void }) {
+function Home({ profile, accountName, cases, onPage, onOpenCase, onNewCase }: { profile: Profile; accountName: string; cases: HealthCase[]; onPage: (page: Page) => void; onOpenCase: (healthCase: HealthCase) => void; onNewCase: () => void }) {
   const latestCase = cases[0];
+  const greeting = (accountName.split(/\s+/)[0] || profile.name).toUpperCase();
   return (
     <div className="page-wrap">
       <section className="welcome-row">
-        <div><div className="eyebrow">GOOD MORNING, MAYA</div><h1>{profile.name}’s health, made clearer.</h1><p>Keep the small details together, so the bigger picture is easier to see.</p></div>
+        <div><div className="eyebrow">GOOD MORNING, {greeting}</div><h1>{profile.name}’s health, made clearer.</h1><p>Keep the small details together, so the bigger picture is easier to see.</p></div>
       </section>
 
       <section className="insight-card">
@@ -535,7 +534,7 @@ function CareSummary({ profile, allEpisodes, cases, initialCase }: { profile: Pr
     ["Products & treatments", healthCase.treatments.join(", ")],
     ["What changed", healthCase.changes.join(", ")],
     ["Observed patterns", healthCase.patterns.join(" ")],
-    ["Questions for our clinician", profile.id === "sophie" ? "Could any current products be worth reviewing? What details would be most helpful to track next?" : "What signs would mean these headaches need further assessment?"],
+    ["Questions for our clinician", profile.child ? "Could any current products be worth reviewing? What details would be most helpful to track next?" : "What signs would mean this needs further assessment? What details would be most helpful to track next?"],
   ] : [];
 
   return (
@@ -571,10 +570,10 @@ function CareSummary({ profile, allEpisodes, cases, initialCase }: { profile: Pr
   );
 }
 
-function AuthScreen({ savedAccount, onAuthenticate }: { savedAccount: Account | null; onAuthenticate: (account: Account, isNew: boolean) => void }) {
-  const [mode, setMode] = useState<"signup" | "login">(savedAccount ? "login" : "signup");
+function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSignup: (account: Account, password: string) => string | null; onLogin: (email: string, password: string) => string | null }) {
+  const [mode, setMode] = useState<"signup" | "login">(lastEmail ? "login" : "signup");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState(savedAccount?.email || "");
+  const [email, setEmail] = useState(lastEmail);
   const [password, setPassword] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState("");
@@ -592,13 +591,12 @@ function AuthScreen({ savedAccount, onAuthenticate }: { savedAccount: Account | 
     if (mode === "signup") {
       if (!name.trim()) return setError("Enter your name.");
       if (!agreed) return setError("Confirm that you agree to the privacy terms.");
-      onAuthenticate({ name: name.trim(), email: cleanEmail }, true);
+      const errorMessage = onSignup({ name: name.trim(), email: cleanEmail }, password);
+      if (errorMessage) setError(errorMessage);
       return;
     }
-    if (!savedAccount || savedAccount.email.toLowerCase() !== cleanEmail) {
-      return setError("We couldn’t find a Trace account with that email.");
-    }
-    onAuthenticate(savedAccount, false);
+    const errorMessage = onLogin(cleanEmail, password);
+    if (errorMessage) setError(errorMessage);
   };
 
   return (
@@ -857,24 +855,20 @@ function LogModal({ profile, healthCase, onClose, onSave }: { profile: Profile; 
 }
 
 export default function App() {
+  const bootAccount = useState(sessionAccount)[0];
+  const bootWorkspace = useState(() => bootAccount ? loadWorkspace(bootAccount) : freshWorkspace({ name: "You", email: "" }))[0];
   const [savedAccount, setSavedAccount] = useState<Account | null>(() => {
-    try { return JSON.parse(localStorage.getItem("trace-account") || "null"); } catch { return null; }
+    const accounts = readAccounts();
+    const latest = accounts[accounts.length - 1];
+    return latest ? { name: latest.name, email: latest.email } : null;
   });
-  const [account, setAccount] = useState<Account | null>(() => {
-    try {
-      const hasSession = sessionStorage.getItem("trace-session") === "active" || localStorage.getItem("trace-persistent-session") === "active";
-      return hasSession ? JSON.parse(localStorage.getItem("trace-account") || "null") : null;
-    } catch { return null; }
-  });
-  const [privacyPreferences, setPrivacyPreferences] = useState<PrivacyPreferences>(() => {
-    const defaults = { lockOnClose: true, stripPhotoMetadata: true, expiringShareLinks: true };
-    try { return { ...defaults, ...JSON.parse(localStorage.getItem("trace-privacy") || "{}") }; } catch { return defaults; }
-  });
-  const [active, setActive] = useState(profiles[0]);
-  const [profileList, setProfileList] = useState(profiles);
+  const [account, setAccount] = useState<Account | null>(bootAccount);
+  const [privacyPreferences, setPrivacyPreferences] = useState<PrivacyPreferences>(() => bootAccount ? loadPrivacy(bootAccount.email) : privacyDefaults);
+  const [active, setActive] = useState(() => bootWorkspace.profiles.find((profile) => profile.id === bootWorkspace.activeProfileId) || bootWorkspace.profiles[0]);
+  const [profileList, setProfileList] = useState(bootWorkspace.profiles);
   const [page, setPage] = useState<Page>("Home");
-  const [episodes, setEpisodes] = useState(starterEpisodes);
-  const [cases, setCases] = useState(starterCases);
+  const [episodes, setEpisodes] = useState(bootWorkspace.episodes);
+  const [cases, setCases] = useState(bootWorkspace.cases);
   const [openedCase, setOpenedCase] = useState<HealthCase | null>(null);
   const [summaryCase, setSummaryCase] = useState<HealthCase | null>(null);
   const [caseToRemove, setCaseToRemove] = useState<HealthCase | null>(null);
@@ -885,10 +879,32 @@ export default function App() {
   const [loggingCase, setLoggingCase] = useState<HealthCase | null>(null);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
-  const [onboarding, setOnboarding] = useState(() => localStorage.getItem("trace-onboarding-pending") === "true");
+  const [onboarding, setOnboarding] = useState(() => bootAccount ? localStorage.getItem(onboardingKey(bootAccount.email)) === "true" : false);
   const [toast, setToast] = useState("");
   const activeEpisodes = useMemo(() => episodes[active.id] || [], [episodes, active.id]);
   const activeCases = useMemo(() => cases.filter((healthCase) => healthCase.profileId === active.id).sort((a, b) => b.updatedOrder - a.updatedOrder), [cases, active.id]);
+  useEffect(() => {
+    if (!account) return;
+    const payload: Workspace = { profiles: profileList, activeProfileId: active.id, cases, episodes };
+    localStorage.setItem(workspaceKey(account.email), JSON.stringify(payload));
+  }, [account, profileList, active.id, cases, episodes]);
+  const applyWorkspace = (workspace: Workspace) => {
+    const profile = workspace.profiles.find((item) => item.id === workspace.activeProfileId) || workspace.profiles[0];
+    setProfileList(workspace.profiles);
+    setActive(profile);
+    setCases(workspace.cases);
+    setEpisodes(workspace.episodes);
+    setOpenedCase(null);
+    setSummaryCase(null);
+    setCaseToRemove(null);
+    setEpisodeToDelete(null);
+    setProfileMenu(false);
+    setAddProfile(false);
+    setNewCaseModal(false);
+    setLoggingCase(null);
+    setMobileMenu(false);
+    setPage("Home");
+  };
   const selectProfile = (profile: Profile) => { setActive(profile); setProfileMenu(false); setOpenedCase(null); setSummaryCase(null); setPage("Home"); };
   const navigate = (nextPage: Page) => { setOpenedCase(null); setSummaryCase(nextPage === "Case Summaries" ? activeCases[0] || null : null); setPage(nextPage); };
   const createProfile = (profile: Profile) => {
@@ -949,48 +965,66 @@ export default function App() {
     setLoggingCase(null); setToast(`Added to “${loggingCase.title}”`);
     setTimeout(() => setToast(""), 3200);
   };
-  const authenticate = (nextAccount: Account, isNew: boolean) => {
-    if (isNew) {
-      localStorage.setItem("trace-account", JSON.stringify(nextAccount));
-      localStorage.setItem("trace-onboarding-pending", "true");
-      setSavedAccount(nextAccount);
-      setOnboarding(true);
-    }
-    sessionStorage.setItem("trace-session", "active");
-    if (!privacyPreferences.lockOnClose) localStorage.setItem("trace-persistent-session", "active");
+  const signup = (nextAccount: Account, password: string) => {
+    const accounts = readAccounts();
+    if (accounts.some((item) => item.email === nextAccount.email)) return "An account with that email already exists. Log in instead.";
+    writeAccounts([...accounts, { ...nextAccount, password }]);
+    applyWorkspace(freshWorkspace(nextAccount));
+    localStorage.setItem(onboardingKey(nextAccount.email), "true");
+    setPrivacyPreferences(privacyDefaults);
+    setSavedAccount(nextAccount);
+    setOnboarding(true);
+    startSession(nextAccount, false);
     setAccount(nextAccount);
+    return null;
+  };
+  const login = (email: string, password: string) => {
+    const match = readAccounts().find((item) => item.email === email);
+    if (!match) return "We couldn’t find a Trace account with that email.";
+    if (match.password && match.password !== password) return "That password doesn’t match this account.";
+    const nextAccount = { name: match.name, email: match.email };
+    const privacy = loadPrivacy(nextAccount.email);
+    applyWorkspace(loadWorkspace(nextAccount));
+    setPrivacyPreferences(privacy);
+    setSavedAccount(nextAccount);
+    setOnboarding(localStorage.getItem(onboardingKey(nextAccount.email)) === "true");
+    startSession(nextAccount, !privacy.lockOnClose);
+    setAccount(nextAccount);
+    return null;
   };
   const finishOnboarding = () => {
-    localStorage.removeItem("trace-onboarding-pending");
+    if (account) localStorage.removeItem(onboardingKey(account.email));
     setMobileMenu(false);
     setOnboarding(false);
     navigate("Home");
   };
   const changePrivacyPreference = (key: keyof PrivacyPreferences) => {
+    if (!account) return;
     setPrivacyPreferences((current) => {
       const updated = { ...current, [key]: !current[key] };
-      localStorage.setItem("trace-privacy", JSON.stringify(updated));
+      localStorage.setItem(privacyKey(account.email), JSON.stringify(updated));
       if (key === "lockOnClose") {
-        if (updated.lockOnClose) localStorage.removeItem("trace-persistent-session");
-        else localStorage.setItem("trace-persistent-session", "active");
+        if (updated.lockOnClose) localStorage.removeItem(persistentKey(account.email));
+        else localStorage.setItem(persistentKey(account.email), "active");
       }
       return updated;
     });
   };
   const signOut = () => {
+    if (account) localStorage.removeItem(persistentKey(account.email));
     sessionStorage.removeItem("trace-session");
-    localStorage.removeItem("trace-persistent-session");
+    sessionStorage.removeItem("trace-session-email");
     setPrivacyOpen(false);
     setAccount(null);
   };
-  if (!account) return <AuthScreen savedAccount={savedAccount} onAuthenticate={authenticate} />;
+  if (!account) return <AuthScreen lastEmail={savedAccount?.email || ""} onSignup={signup} onLogin={login} />;
   return (
     <div className="app-shell">
       <AppHeader active={active} account={account} onProfile={() => setProfileMenu(true)} onAccount={() => setPrivacyOpen(true)} onLog={() => setNewCaseModal(true)} onMenu={() => setMobileMenu(true)} />
       <Sidebar page={page} active={active} open={mobileMenu} onPage={navigate} onClose={() => setMobileMenu(false)} onProfile={() => setProfileMenu(true)} onPrivacy={() => setPrivacyOpen(true)} />
       <main className="main-content">
         {openedCase ? <CaseDetail profile={active} healthCase={openedCase} episodes={activeEpisodes} onBack={() => setOpenedCase(null)} onAdd={() => setLoggingCase(openedCase)} onPrepare={() => { setSummaryCase(openedCase); setOpenedCase(null); setPage("Case Summaries"); }} onRemove={() => setCaseToRemove(openedCase)} onDeleteEpisode={setEpisodeToDelete} onStatusChange={updateCaseStatus} /> : <>
-          {page === "Home" && <Home profile={active} cases={activeCases} onPage={navigate} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
+          {page === "Home" && <Home profile={active} accountName={account.name} cases={activeCases} onPage={navigate} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
           {page === "Timeline" && <Timeline profile={active} episodes={activeEpisodes} cases={activeCases} onLog={setLoggingCase} onNewCase={() => setNewCaseModal(true)} onDelete={setEpisodeToDelete} />}
           {page === "Patterns" && <Patterns profile={active} cases={activeCases} onOpenCase={setOpenedCase} />}
           {page === "My Cases" && <History profile={active} cases={activeCases} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
