@@ -128,14 +128,18 @@ function loadPrivacy(email: string): PrivacyPreferences {
   return { ...privacyDefaults, ...readJson<Partial<PrivacyPreferences>>(privacyKey(email), {}) };
 }
 
+const demoAccount: Account = { name: "Guest", email: "demo@local" };
+
 function sessionAccount(): Account | null {
   const accounts = readAccounts();
   const sessionActive = sessionStorage.getItem("trace-session") === "active";
   if (sessionActive) {
     const email = sessionStorage.getItem("trace-session-email") || readJson<Account | null>("trace-account", null)?.email?.toLowerCase();
+    if (email === demoAccount.email) return demoAccount;
     const match = accounts.find((account) => account.email === email);
     if (match) return { name: match.name, email: match.email };
   }
+  if (localStorage.getItem(persistentKey(demoAccount.email)) === "active" && !loadPrivacy(demoAccount.email).lockOnClose) return demoAccount;
   const persistent = accounts.find((account) => localStorage.getItem(persistentKey(account.email)) === "active" && !loadPrivacy(account.email).lockOnClose);
   if (persistent) return { name: persistent.name, email: persistent.email };
   return null;
@@ -710,7 +714,7 @@ function CareSummary({ profile, allEpisodes, cases, initialCase }: { profile: Pr
   );
 }
 
-function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSignup: (account: Account, password: string) => string | null; onLogin: (email: string, password: string) => string | null }) {
+function AuthScreen({ lastEmail, onSignup, onLogin, onDemo }: { lastEmail: string; onSignup: (account: Account, password: string) => string | null; onLogin: (email: string, password: string) => string | null; onDemo: () => void }) {
   const [mode, setMode] = useState<"signup" | "login">(lastEmail ? "login" : "signup");
   const [name, setName] = useState("");
   const [email, setEmail] = useState(lastEmail);
@@ -739,6 +743,14 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
     if (errorMessage) setError(errorMessage);
   };
 
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("demo") !== "1") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("demo");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    onDemo();
+  }, [onDemo]);
+
   return (
     <main className="auth-shell">
       <section className="auth-intro">
@@ -748,6 +760,13 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
       </section>
       <section className="auth-panel">
         <div className="auth-card">
+          <div className="demo-entry">
+            <span className="eyebrow">TRY TRACE</span>
+            <h2>Use the demo</h2>
+            <p>Anyone with this link can try Trace in their own browser. Notes stay on that device and are not shared.</p>
+            <Button className="full-button" onClick={onDemo}>Use the demo <Icon name="arrow" size={17} /></Button>
+          </div>
+          <div className="auth-divider"><span>or save an account on this device</span></div>
           <div className="auth-tabs"><button className={mode === "signup" ? "active" : ""} onClick={() => changeMode("signup")}>Create account</button><button className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")}>Log in</button></div>
           <span className="eyebrow">{mode === "signup" ? "GET STARTED" : "WELCOME BACK"}</span>
           <h2>{mode === "signup" ? "Create your private space" : "Log in to Trace"}</h2>
@@ -780,7 +799,7 @@ function PrivacySettingsModal({ account, preferences, onChange, onClose, onSignO
         <span className="eyebrow">ACCOUNT & PRIVACY</span>
         <h2>Privacy settings</h2>
         <p>Control access and photo privacy. Health information does not leave this device.</p>
-        <div className="privacy-account"><span className="account-avatar">{account.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{account.name}</strong><small>{account.email}</small></span></div>
+        <div className="privacy-account"><span className="account-avatar">{account.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{account.name}</strong><small>{account.email === demoAccount.email ? "Demo on this browser" : account.email}</small></span></div>
         <div className="privacy-fixed"><Icon name="lock" size={18} /><span><strong>Profiles stay separate</strong><small>Cases, timelines, photos, and summaries belong only to their selected profile.</small></span></div>
         <div className="privacy-fixed"><Icon name="lock" size={18} /><span><strong>Nothing is shared</strong><small>Trace never sends summaries, patterns, photos, or timeline entries. They stay in this browser.</small></span></div>
         <div className="privacy-options">
@@ -1152,6 +1171,16 @@ export default function App() {
     setAccount(nextAccount);
     return null;
   };
+  const startDemo = () => {
+    const firstVisit = !localStorage.getItem(workspaceKey(demoAccount.email));
+    const privacy = loadPrivacy(demoAccount.email);
+    applyWorkspace(loadWorkspace(demoAccount));
+    setPrivacyPreferences(privacy);
+    if (firstVisit) localStorage.setItem(onboardingKey(demoAccount.email), "true");
+    setOnboarding(firstVisit || localStorage.getItem(onboardingKey(demoAccount.email)) === "true");
+    startSession(demoAccount, !privacy.lockOnClose);
+    setAccount(demoAccount);
+  };
   const login = (email: string, password: string) => {
     const match = readAccounts().find((item) => item.email === email);
     if (!match) return "We couldn’t find a Trace account with that email.";
@@ -1192,7 +1221,7 @@ export default function App() {
     setToast("");
     setAccount(null);
   };
-  if (!account) return <AuthScreen lastEmail={savedAccount?.email || ""} onSignup={signup} onLogin={login} />;
+  if (!account) return <AuthScreen lastEmail={savedAccount?.email === demoAccount.email ? "" : savedAccount?.email || ""} onSignup={signup} onLogin={login} onDemo={startDemo} />;
   return (
     <div className="app-shell">
       <AppHeader active={active} account={account} onProfile={() => setProfileMenu(true)} onAccount={() => setPrivacyOpen(true)} onLog={() => setNewCaseModal(true)} onMenu={() => setMobileMenu(true)} />

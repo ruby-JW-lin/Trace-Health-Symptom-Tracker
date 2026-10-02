@@ -420,6 +420,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .privacy-consent input { width: 17px; height: 17px; accent-color: var(--forest); flex: none; }
 .auth-error { margin: -6px 0 15px; padding: 10px 11px; border-radius: 10px; background: #f8e9e4; color: #814537; display: flex; align-items: center; gap: 7px; font-size: 11px; }
 .auth-assurance { margin-top: 18px; color: var(--muted); display: flex; justify-content: center; align-items: center; gap: 6px; font-size: 10px; }
+.demo-entry { margin-bottom: 22px; }
+.demo-entry h2 { margin-bottom: 8px; }
+.demo-entry p { margin: 0 0 16px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; color: var(--muted); font-size: 11px; letter-spacing: 0.02em; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
 
 .privacy-modal { width: min(590px, 100%); padding: 36px; }
 .privacy-modal .modal-close { position: absolute; top: 16px; right: 16px; }
