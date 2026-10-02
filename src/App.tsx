@@ -904,6 +904,7 @@ export default function App() {
     setLoggingCase(null);
     setMobileMenu(false);
     setPage("Home");
+    setToast("");
   };
   const selectProfile = (profile: Profile) => { setActive(profile); setProfileMenu(false); setOpenedCase(null); setSummaryCase(null); setPage("Home"); };
   const navigate = (nextPage: Page) => { setOpenedCase(null); setSummaryCase(nextPage === "Case Summaries" ? activeCases[0] || null : null); setPage(nextPage); };
@@ -1015,6 +1016,7 @@ export default function App() {
     sessionStorage.removeItem("trace-session");
     sessionStorage.removeItem("trace-session-email");
     setPrivacyOpen(false);
+    setToast("");
     setAccount(null);
   };
   if (!account) return <AuthScreen lastEmail={savedAccount?.email || ""} onSignup={signup} onLogin={login} />;
