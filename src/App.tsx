@@ -148,6 +148,135 @@ function startSession(account: Account, persistent: boolean) {
   else localStorage.removeItem(persistentKey(account.email));
 }
 
+const ignoredPlaces = new Set(["", "not specified"]);
+const ignoredTreatments = new Set(["", "nothing recorded"]);
+const ignoredChanges = new Set(["", "nothing i can think of"]);
+
+function uniqueLabels(values: string[], ignored: Set<string>) {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const value of values) {
+    const label = value.trim();
+    const key = label.toLowerCase();
+    if (!label || ignored.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
+type TimelineInsight = {
+  locations: string[];
+  treatments: string[];
+  changes: string[];
+  observations: string[];
+  severityLabel: string;
+  patterns: string[];
+  photoCount: number;
+  entryCount: number;
+  latestDate: string;
+};
+
+function insightFromTimeline(episodes: Episode[]): TimelineInsight {
+  const timeline = (episodes || []).filter((episode) => episode);
+  const locations = uniqueLabels(timeline.map((episode) => episode.place || ""), ignoredPlaces);
+  const treatments = uniqueLabels(timeline.map((episode) => episode.treatment || ""), ignoredTreatments);
+  const changes = uniqueLabels(timeline.flatMap((episode) => episode.tags || []), ignoredChanges);
+  const observations = uniqueLabels(timeline.map((episode) => episode.title || ""), new Set(["", "new observation"]));
+  const severities = timeline.map((episode) => episode.severity).filter((value) => Number.isFinite(value));
+  const minSeverity = severities.length ? Math.min(...severities) : 0;
+  const maxSeverity = severities.length ? Math.max(...severities) : 0;
+  const severityLabel = severities.length ? (minSeverity === maxSeverity ? `${minSeverity} / 10` : `${minSeverity}–${maxSeverity} / 10`) : "Not recorded";
+  const photoCount = timeline.filter((episode) => Boolean(episode.attachment)).length;
+  const entryCount = timeline.length;
+  const patterns: string[] = [];
+
+  if (entryCount < 2) {
+    patterns.push("Not enough entries in this timeline to identify a pattern yet.");
+  } else {
+    const tagCounts = new Map<string, { label: string; count: number }>();
+    for (const episode of timeline) {
+      const seen = new Set<string>();
+      for (const tag of episode.tags || []) {
+        const label = tag.trim();
+        const key = label.toLowerCase();
+        if (!label || ignoredChanges.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        const current = tagCounts.get(key);
+        tagCounts.set(key, { label, count: (current?.count || 0) + 1 });
+      }
+    }
+    const repeatedTags = [...tagCounts.values()].filter((item) => item.count >= 2).sort((a, b) => b.count - a.count);
+    for (const item of repeatedTags.slice(0, 2)) {
+      patterns.push(`“${item.label}” was recorded alongside ${item.count} of ${entryCount} entries. This is a repeated detail, not a cause.`);
+    }
+
+    const placeCounts = new Map<string, { label: string; count: number }>();
+    for (const episode of timeline) {
+      const label = (episode.place || "").trim();
+      const key = label.toLowerCase();
+      if (!label || ignoredPlaces.has(key)) continue;
+      const current = placeCounts.get(key);
+      placeCounts.set(key, { label, count: (current?.count || 0) + 1 });
+    }
+    const repeatedPlaces = [...placeCounts.values()].filter((item) => item.count >= 2).sort((a, b) => b.count - a.count);
+    for (const item of repeatedPlaces.slice(0, 1)) {
+      patterns.push(`${item.count} entries in this timeline were recorded at ${item.label}.`);
+    }
+
+    const newest = timeline[0];
+    const earliest = timeline[timeline.length - 1];
+    if (newest && earliest && newest.id !== earliest.id && newest.severity !== earliest.severity) {
+      const direction = newest.severity > earliest.severity ? "higher" : "lower";
+      patterns.push(`The newest entry’s severity (${newest.severity}/10) is ${direction} than the earliest entry in this timeline (${earliest.severity}/10).`);
+    }
+
+    if (!patterns.length) patterns.push("No repeated detail stood out across this case’s timeline yet.");
+  }
+
+  return {
+    locations,
+    treatments,
+    changes,
+    observations,
+    severityLabel,
+    patterns,
+    photoCount,
+    entryCount,
+    latestDate: timeline[0]?.date || "None yet",
+  };
+}
+
+function repeatedPattern(pattern: string) {
+  return !pattern.startsWith("Not enough") && !pattern.startsWith("No repeated");
+}
+
+function stripImageMetadata(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth || 1;
+      canvas.height = image.naturalHeight || 1;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Could not read the photo."));
+        return;
+      }
+      context.drawImage(image, 0, 0);
+      URL.revokeObjectURL(objectUrl);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Could not read the photo."));
+    };
+    image.src = objectUrl;
+  });
+}
+
 const navItems: Page[] = ["Home", "Timeline", "Patterns", "My Cases", "Case Summaries"];
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -362,8 +491,9 @@ function Sidebar({ page, active, open, onPage, onClose, onProfile, onPrivacy }: 
   );
 }
 
-function Home({ profile, accountName, cases, onPage, onOpenCase, onNewCase }: { profile: Profile; accountName: string; cases: HealthCase[]; onPage: (page: Page) => void; onOpenCase: (healthCase: HealthCase) => void; onNewCase: () => void }) {
+function Home({ profile, accountName, cases, episodes, onPage, onOpenCase, onNewCase }: { profile: Profile; accountName: string; cases: HealthCase[]; episodes: Episode[]; onPage: (page: Page) => void; onOpenCase: (healthCase: HealthCase) => void; onNewCase: () => void }) {
   const latestCase = cases[0];
+  const latestInsight = latestCase ? insightFromTimeline((episodes || []).filter((episode) => episode.caseId === latestCase.id)) : null;
   const greeting = (accountName.split(/\s+/)[0] || profile.name).toUpperCase();
   return (
     <div className="page-wrap">
@@ -375,7 +505,7 @@ function Home({ profile, accountName, cases, onPage, onOpenCase, onNewCase }: { 
         <div className="insight-icon"><Icon name="spark" size={24} /></div>
         <div className="insight-copy">
           <span className="pill">PATTERN FROM “{latestCase?.title.toUpperCase() || "NEW CASE"}”</span>
-          <h2>{latestCase?.patterns[0] || "Patterns will appear as this case’s history grows."}</h2>
+          <h2>{latestInsight?.patterns[0] || "Patterns will appear as this case’s history grows."}</h2>
           <p>This pattern uses only this case’s records. It is not a diagnosis or proof of cause.</p>
         </div>
         <Button variant="soft" onClick={() => latestCase ? onOpenCase(latestCase) : onNewCase()}>Open case <Icon name="arrow" size={17} /></Button>
@@ -419,7 +549,7 @@ function Timeline({ profile, episodes, cases, onLog, onNewCase, onDelete }: { pr
             <div className="timeline-rail"><span>{index + 1}</span></div>
             <div className="timeline-card">
               <div className="episode-top"><span>{ep.date}</span><div className="episode-top-actions"><Severity value={ep.severity} /><button className="delete-entry-button" onClick={() => onDelete(ep)} aria-label={`Delete ${ep.title}`}><Icon name="trash" size={15} /></button></div></div>
-              <h2>{ep.title}</h2><p className="location">{ep.place}</p><p>{ep.detail}</p>
+              <h2>{ep.title}</h2><p className="location">{ep.place}</p>{ep.detail && <p>{ep.detail}</p>}
               <div className="timeline-footer"><div className="tag-row">{ep.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div><span className="tried">Tried: {ep.treatment}</span></div>
               {ep.attachment && <EpisodeAttachment attachment={ep.attachment} />}
             </div>
@@ -432,13 +562,17 @@ function Timeline({ profile, episodes, cases, onLog, onNewCase, onDelete }: { pr
   );
 }
 
-function Patterns({ profile, cases, onOpenCase }: { profile: Profile; cases: HealthCase[]; onOpenCase: (healthCase: HealthCase) => void }) {
-  const patterns = cases.flatMap((healthCase) => healthCase.patterns.filter((pattern) => !pattern.startsWith("Not enough")).slice(0, 1).map((pattern) => ({ title: pattern, stat: `${healthCase.entries} case entries`, text: `Observed only within “${healthCase.title}”.`, healthCase })));
+function Patterns({ profile, cases, episodes, onOpenCase }: { profile: Profile; cases: HealthCase[]; episodes: Episode[]; onOpenCase: (healthCase: HealthCase) => void }) {
+  const patterns = cases.flatMap((healthCase) => {
+    const caseEpisodes = episodes.filter((episode) => episode.caseId === healthCase.id);
+    const insight = insightFromTimeline(caseEpisodes);
+    return insight.patterns.filter(repeatedPattern).slice(0, 2).map((pattern) => ({ title: pattern, stat: `${caseEpisodes.length} timeline entries`, text: `Observed only within “${healthCase.title}”.`, healthCase }));
+  });
   return (
     <div className="page-wrap narrow-page">
-      <div className="page-title"><div><span className="eyebrow">ONLY FROM {profile.name.toUpperCase()}’S RECORDS</span><h1>Observed patterns</h1><p>Connections in the details you’ve logged over time.</p></div></div>
-      <div className="safety-banner"><Icon name="info" /><p><strong>Patterns, not conclusions.</strong> Trace highlights repeated details in {profile.name}’s records. These insights do not diagnose a condition or prove that one thing caused another.</p></div>
-      <div className="patterns-grid">{patterns.map((pattern, i) => <article className="pattern-card" key={`${pattern.healthCase.id}-${pattern.title}`}><div className="pattern-number">0{i + 1}</div><span className="pill">{pattern.healthCase.title.toUpperCase()}</span><h2>{pattern.title}</h2><p>{pattern.text}</p><div className="pattern-stat"><Icon name="pattern" /><strong>{pattern.stat}</strong></div><Button variant="ghost" onClick={() => onOpenCase(pattern.healthCase)}>Open case <Icon name="arrow" size={16} /></Button></article>)}</div>
+      <div className="page-title"><div><span className="eyebrow">ONLY FROM {profile.name.toUpperCase()}’S RECORDS</span><h1>Observed patterns</h1><p>Repeated details from each case’s own timeline.</p></div></div>
+      <div className="safety-banner"><Icon name="info" /><p><strong>Patterns, not conclusions.</strong> Trace highlights repeated details in {profile.name}’s records. These insights do not diagnose a condition or prove that one thing caused another. They stay on this device.</p></div>
+      {patterns.length ? <div className="patterns-grid">{patterns.map((pattern, i) => <article className="pattern-card" key={`${pattern.healthCase.id}-${pattern.title}`}><div className="pattern-number">0{i + 1}</div><span className="pill">{pattern.healthCase.title.toUpperCase()}</span><h2>{pattern.title}</h2><p>{pattern.text}</p><div className="pattern-stat"><Icon name="pattern" /><strong>{pattern.stat}</strong></div><Button variant="ghost" onClick={() => onOpenCase(pattern.healthCase)}>Open case <Icon name="arrow" size={16} /></Button></article>)}</div> : <div className="empty-state"><p>{cases.length ? `No repeated detail has shown up in ${profile.name}’s timelines yet.` : `No cases yet for ${profile.name}.`}</p></div>}
     </div>
   );
 }
@@ -449,6 +583,7 @@ function History({ profile, cases, onOpenCase, onNewCase }: { profile: Profile; 
 
 function CaseDetail({ profile, healthCase, episodes, onBack, onAdd, onPrepare, onRemove, onDeleteEpisode, onStatusChange }: { profile: Profile; healthCase: HealthCase; episodes: Episode[]; onBack: () => void; onAdd: () => void; onPrepare: () => void; onRemove: () => void; onDeleteEpisode: (episode: Episode) => void; onStatusChange: (status: HealthCase["status"]) => void }) {
   const caseEpisodes = episodes.filter((episode) => episode.caseId === healthCase.id);
+  const insight = insightFromTimeline(caseEpisodes);
   const swipeBack = useSwipeRight(onBack);
   return (
     <div className="page-wrap case-detail-page" {...swipeBack}>
@@ -459,7 +594,7 @@ function CaseDetail({ profile, healthCase, episodes, onBack, onAdd, onPrepare, o
           <span className="eyebrow">CASE · {profile.name.toUpperCase()}’S HISTORY</span>
           <h1>{healthCase.title}</h1>
           <p>{healthCase.concern}</p>
-          <div className="case-hero-meta"><span><small>STARTED</small><strong>{healthCase.started}</strong></span><span><small>ENTRIES</small><strong>{healthCase.entries}</strong></span><span><small>SEVERITY</small><strong>{healthCase.severity}</strong></span></div>
+          <div className="case-hero-meta"><span><small>STARTED</small><strong>{healthCase.started}</strong></span><span><small>ENTRIES</small><strong>{insight.entryCount}</strong></span><span><small>SEVERITY</small><strong>{insight.severityLabel}</strong></span></div>
         </div>
         {healthCase.cover && <CaseCover kind={healthCase.cover} />}
       </div>
@@ -470,13 +605,13 @@ function CaseDetail({ profile, healthCase, episodes, onBack, onAdd, onPrepare, o
       <div className="case-detail-grid">
         <section className="case-timeline">
           <div className="section-heading"><div><h2>Case timeline</h2><p>Only entries connected to {healthCase.title.toLowerCase()}</p></div></div>
-          {caseEpisodes.length ? caseEpisodes.map((episode, index) => <article className="case-entry" key={episode.id}><span className="entry-node">{index + 1}</span><div><div className="episode-top"><span>{episode.date}</span><div className="episode-top-actions"><Severity value={episode.severity} /><button className="delete-entry-button" onClick={() => onDeleteEpisode(episode)} aria-label={`Delete ${episode.title}`}><Icon name="trash" size={15} /></button></div></div><h3>{episode.title}</h3><span className="location">{episode.place}</span><p>{episode.detail}</p><div className="tag-row">{episode.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>{episode.attachment && <EpisodeAttachment attachment={episode.attachment} />}<div className="entry-treatment"><strong>Tried</strong>{episode.treatment}</div></div></article>) : <article className="case-entry"><span className="entry-node">1</span><div><div className="episode-top"><span>{healthCase.started}</span></div><h3>Case started</h3><p>{healthCase.concern}</p><div className="tag-row">{healthCase.symptoms.map((symptom) => <span className="tag" key={symptom}>{symptom}</span>)}</div></div></article>}
+          {caseEpisodes.length ? caseEpisodes.map((episode, index) => <article className="case-entry" key={episode.id}><span className="entry-node">{index + 1}</span><div><div className="episode-top"><span>{episode.date}</span><div className="episode-top-actions"><Severity value={episode.severity} /><button className="delete-entry-button" onClick={() => onDeleteEpisode(episode)} aria-label={`Delete ${episode.title}`}><Icon name="trash" size={15} /></button></div></div><h3>{episode.title}</h3><span className="location">{episode.place}</span>{episode.detail && <p>{episode.detail}</p>}<div className="tag-row">{episode.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>{episode.attachment && <EpisodeAttachment attachment={episode.attachment} />}<div className="entry-treatment"><strong>Tried</strong>{episode.treatment}</div></div></article>) : <article className="case-entry"><span className="entry-node">1</span><div><div className="episode-top"><span>{healthCase.started}</span></div><h3>Case started</h3><p>{healthCase.concern}</p></div></article>}
         </section>
         <aside className="case-facts">
-          <section><span className="fact-icon"><Icon name="history" size={18} /></span><div><small>SYMPTOMS & LOCATIONS</small><h3>{healthCase.symptoms.join(", ")}</h3><p>{healthCase.locations.join(" · ")}</p></div></section>
-          <section><span className="fact-icon"><Icon name="care" size={18} /></span><div><small>PRODUCTS & TREATMENTS</small><h3>{healthCase.treatments.join(", ")}</h3><p>What changed: {healthCase.changes.join(", ")}</p></div></section>
-          <section className="pattern-fact"><span className="fact-icon"><Icon name="spark" size={18} /></span><div><small>PATTERNS FROM THIS CASE</small><h3>{healthCase.patterns[0]}</h3><p>Pattern from this case’s records, not a diagnosis or proof of cause.</p></div></section>
-          <section><span className="fact-icon"><Icon name="camera" size={18} /></span><div><small>PHOTOS</small><h3>{healthCase.cover ? "2 photos saved" : "No photos yet"}</h3><p>Stored only with this case.</p></div></section>
+          <section><span className="fact-icon"><Icon name="history" size={18} /></span><div><small>SYMPTOMS & LOCATIONS</small><h3>{insight.observations.join(", ") || "None logged yet"}</h3><p>{insight.locations.join(" · ") || "No location recorded"}</p></div></section>
+          <section><span className="fact-icon"><Icon name="care" size={18} /></span><div><small>PRODUCTS & TREATMENTS</small><h3>{insight.treatments.join(", ") || "None recorded"}</h3><p>What changed: {insight.changes.join(", ") || "None recorded"}</p></div></section>
+          <section className="pattern-fact"><span className="fact-icon"><Icon name="spark" size={18} /></span><div><small>PATTERNS FROM THIS CASE</small><h3>{insight.patterns[0]}</h3><p>Read from this case’s timeline only. Not a diagnosis or proof of cause.</p></div></section>
+          <section><span className="fact-icon"><Icon name="camera" size={18} /></span><div><small>PHOTOS</small><h3>{insight.photoCount === 0 ? "No photos yet" : `${insight.photoCount} photo${insight.photoCount === 1 ? "" : "s"} saved`}</h3><p>Stored only with this case. Photo files stay on this device.</p></div></section>
         </aside>
       </div>
     </div>
@@ -516,30 +651,35 @@ function DeleteEpisodeModal({ episode, onClose, onConfirm }: { episode: Episode;
 function CareSummary({ profile, allEpisodes, cases, initialCase }: { profile: Profile; allEpisodes: Episode[]; cases: HealthCase[]; initialCase?: HealthCase }) {
   const [selectedCase, setSelectedCase] = useState<HealthCase | undefined>(initialCase || cases[0]);
   const [editing, setEditing] = useState(false);
-  const [included, setIncluded] = useState<Record<number, boolean>>({ 0: true, 1: true, 2: true, 3: true, 4: true });
+  const [included, setIncluded] = useState<Record<number, boolean>>({ 0: true, 1: true, 2: true, 3: true, 4: true, 5: true });
   const [concern, setConcern] = useState(selectedCase?.concern || "");
 
   const healthCase = selectedCase;
-  const episodes = allEpisodes.filter((ep) => !healthCase || ep.caseId === healthCase.id);
+  const episodes = allEpisodes.filter((ep) => healthCase && ep.caseId === healthCase.id);
+  const insight = insightFromTimeline(episodes);
 
   const handleCaseSelect = (c: HealthCase) => {
     setSelectedCase(c);
     setConcern(c.concern);
     setEditing(false);
-    setIncluded({ 0: true, 1: true, 2: true, 3: true, 4: true });
+    setIncluded({ 0: true, 1: true, 2: true, 3: true, 4: true, 5: true });
   };
 
+  const photoLine = insight.photoCount === 0
+    ? "No photos on this timeline."
+    : `${insight.photoCount} photo${insight.photoCount === 1 ? "" : "s"} saved with this case. The images stay on this device and are not included here.`;
   const sections = healthCase ? [
-    ["Symptoms & locations", `${healthCase.symptoms.join(", ")}. Locations: ${healthCase.locations.join(", ")}.`],
-    ["Products & treatments", healthCase.treatments.join(", ")],
-    ["What changed", healthCase.changes.join(", ")],
-    ["Observed patterns", healthCase.patterns.join(" ")],
+    ["Symptoms & locations", insight.observations.length || insight.locations.length ? `${insight.observations.length ? `Noted: ${insight.observations.join("; ")}.` : "No observations recorded yet."} ${insight.locations.length ? `Locations: ${insight.locations.join(", ")}.` : "No location recorded."}` : "Nothing has been logged on this timeline yet."],
+    ["Products & treatments", insight.treatments.length ? insight.treatments.join(", ") : "Nothing recorded on this timeline."],
+    ["What changed", insight.changes.length ? insight.changes.join(", ") : "No changes recorded on this timeline."],
+    ["Observed patterns", insight.patterns.join(" ")],
+    ["Photos", photoLine],
     ["Questions for our clinician", profile.child ? "Could any current products be worth reviewing? What details would be most helpful to track next?" : "What signs would mean this needs further assessment? What details would be most helpful to track next?"],
   ] : [];
 
   return (
     <div className="page-wrap summary-page">
-      <div className="page-title"><div><span className="eyebrow">PREPARED ONLY FROM THIS CASE</span><h1>Prepare for Doctor</h1><p>Review and control what is included before sharing.</p></div><div className="title-actions"><Button variant="secondary" onClick={() => setEditing(!editing)}><Icon name="edit" size={17} /> {editing ? "Done editing" : "Edit summary"}</Button><Button>Share summary</Button></div></div>
+      <div className="page-title"><div><span className="eyebrow">PREPARED ONLY FROM THIS CASE</span><h1>Prepare for Doctor</h1><p>Written from this case’s timeline. It stays on this device.</p></div><div className="title-actions"><Button variant="secondary" onClick={() => setEditing(!editing)}><Icon name="edit" size={17} /> {editing ? "Done editing" : "Edit summary"}</Button></div></div>
 
       <div className="case-picker">
         <div className="case-picker-label"><Icon name="care" size={16} />Choose a case to prepare</div>
@@ -556,12 +696,12 @@ function CareSummary({ profile, allEpisodes, cases, initialCase }: { profile: Pr
 
       {healthCase ? (
         <div className="document">
-          <div className="document-head"><div><span>TRACE · DOCTOR-READY CASE HISTORY</span><h2>{healthCase.title}</h2><p>{profile.name} · Started {healthCase.started} · {healthCase.entries} entries</p></div><ProfileBadge profile={profile} /></div>
+          <div className="document-head"><div><span>TRACE · PRIVATE CASE HISTORY</span><h2>{healthCase.title}</h2><p>{profile.name} · Started {healthCase.started} · {insight.entryCount} timeline {insight.entryCount === 1 ? "entry" : "entries"}</p></div><ProfileBadge profile={profile} /></div>
           <section className="concern-block"><span>PRIMARY CONCERN</span>{editing ? <textarea value={concern} onChange={(e) => setConcern(e.target.value)} /> : <h3>{concern}</h3>}</section>
-          <div className="document-stats"><div><span>Tracking since</span><strong>{healthCase.started}</strong></div><div><span>Severity range</span><strong>{healthCase.severity}</strong></div><div><span>Most recent entry</span><strong>{healthCase.updated}</strong></div></div>
-          <div className="include-hint"><Icon name="check" size={16} /><span>Select what to include when this summary is shared.</span></div>
+          <div className="document-stats"><div><span>Tracking since</span><strong>{healthCase.started}</strong></div><div><span>Severity range</span><strong>{insight.severityLabel}</strong></div><div><span>Most recent entry</span><strong>{insight.latestDate}</strong></div></div>
+          <div className="include-hint"><Icon name="check" size={16} /><span>Choose which sections to show in this private summary. Nothing here is sent or shared.</span></div>
           <div className="document-sections">{sections.map(([title, text], i) => <section className={included[i] ? "" : "section-excluded"} key={title}><button className="include-toggle" onClick={() => setIncluded((current) => ({ ...current, [i]: !current[i] }))} aria-label={`${included[i] ? "Exclude" : "Include"} ${title}`}>{included[i] && <Icon name="check" size={13} />}</button><div><h3>{title}</h3>{editing ? <textarea defaultValue={text} /> : <p>{text}</p>}</div></section>)}</div>
-          <div className="document-note"><Icon name="info" size={18} /><p>This summary reflects information recorded by the user. Observed patterns are not a diagnosis and do not establish cause.</p></div>
+          <div className="document-note"><Icon name="info" size={18} /><p>This summary is built only from this case’s timeline and stays on this device. Observed patterns are not a diagnosis and do not establish cause.</p></div>
         </div>
       ) : (
         <div className="empty-state"><p>No cases yet for {profile.name}.</p></div>
@@ -604,7 +744,7 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
       <section className="auth-intro">
         <div className="auth-brand"><span className="brand-mark"><img src="/assets/trace-logo-pulse.svg" alt="" /></span><span className="brand-name">trace</span></div>
         <div><span className="eyebrow">PRIVATE HEALTH HISTORIES</span><h1>Keep the details clear, private, and ready when they matter.</h1><p>Document recurring health concerns in separate cases for every person you care for.</p></div>
-        <div className="auth-trust-list"><span><Icon name="lock" size={18} /><strong>Separate by profile</strong><small>Records never mix between people.</small></span><span><Icon name="care" size={18} /><strong>You control sharing</strong><small>Nothing is shared without your action.</small></span></div>
+        <div className="auth-trust-list"><span><Icon name="lock" size={18} /><strong>Separate by profile</strong><small>Records never mix between people.</small></span><span><Icon name="care" size={18} /><strong>Stays on this device</strong><small>Summaries and patterns are never sent.</small></span></div>
       </section>
       <section className="auth-panel">
         <div className="auth-card">
@@ -616,7 +756,7 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
             {mode === "signup" && <label className="field"><span>Your name</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Enter your name" /></label>}
             <label className="field"><span>Email address</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" /></label>
             <label className="field"><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} placeholder="At least 8 characters" /></label>
-            {mode === "signup" && <label className="privacy-consent"><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} /><span>I agree to Trace’s privacy terms and understand that I control what is shared.</span></label>}
+            {mode === "signup" && <label className="privacy-consent"><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} /><span>I agree to Trace’s privacy terms and understand that my records stay on this device.</span></label>}
             {error && <div className="auth-error"><Icon name="info" size={16} />{error}</div>}
             <Button type="submit" className="full-button">{mode === "signup" ? "Create private account" : "Log in securely"} <Icon name="arrow" size={17} /></Button>
           </form>
@@ -630,8 +770,7 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
 function PrivacySettingsModal({ account, preferences, onChange, onClose, onSignOut }: { account: Account; preferences: PrivacyPreferences; onChange: (key: keyof PrivacyPreferences) => void; onClose: () => void; onSignOut: () => void }) {
   const settings: Array<{ key: keyof PrivacyPreferences; title: string; detail: string }> = [
     { key: "lockOnClose", title: "Require login when I return", detail: "End your session when this browser closes." },
-    { key: "stripPhotoMetadata", title: "Remove photo location data", detail: "Strip location metadata from new photo attachments." },
-    { key: "expiringShareLinks", title: "Automatically expire summary links", detail: "If you choose to create and send a private case-summary link, it will stop working after 7 days. Trace never sends a link or shares a summary unless you explicitly choose to do so." },
+    { key: "stripPhotoMetadata", title: "Remove photo location data", detail: "Strip location metadata from new photo attachments before they are saved." },
   ];
   return (
     <div className="modal-layer"><button className="scrim" onClick={onClose} aria-label="Close privacy settings" />
@@ -640,9 +779,10 @@ function PrivacySettingsModal({ account, preferences, onChange, onClose, onSignO
         <div className="modal-icon"><Icon name="lock" /></div>
         <span className="eyebrow">ACCOUNT & PRIVACY</span>
         <h2>Privacy settings</h2>
-        <p>Control access, attachments, and how information can leave Trace.</p>
+        <p>Control access and photo privacy. Health information does not leave this device.</p>
         <div className="privacy-account"><span className="account-avatar">{account.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{account.name}</strong><small>{account.email}</small></span></div>
         <div className="privacy-fixed"><Icon name="lock" size={18} /><span><strong>Profiles stay separate</strong><small>Cases, timelines, photos, and summaries belong only to their selected profile.</small></span></div>
+        <div className="privacy-fixed"><Icon name="lock" size={18} /><span><strong>Nothing is shared</strong><small>Trace never sends summaries, patterns, photos, or timeline entries. They stay in this browser.</small></span></div>
         <div className="privacy-options">
           {settings.map((setting) => <div className="privacy-option" key={setting.key}><span><strong>{setting.title}</strong><small>{setting.detail}</small></span><button className={`toggle ${preferences[setting.key] ? "on" : ""}`} role="switch" aria-checked={preferences[setting.key]} onClick={() => onChange(setting.key)}><span /></button></div>)}
         </div>
@@ -660,8 +800,8 @@ function OnboardingTour({ page, onNavigate, onMobileMenu, onFinish }: { page: Pa
     { page: "Timeline", selector: ".nav-item.active", eyebrow: "TIMELINE", title: "Choose a case before reviewing entries", detail: "The timeline shows observations for one case at a time. Select the relevant case, then log episodes, open photo attachments, or remove an incorrect entry." },
     { page: "Patterns", selector: ".nav-item.active", eyebrow: "PATTERNS", title: "Notice repetition, not diagnoses", detail: "Trace surfaces details that appear repeatedly within a case. Patterns can support a conversation with a clinician, but they never claim a cause or diagnosis." },
     { page: "My Cases", selector: ".nav-item.active", eyebrow: "MY CASES", title: "Every concern stays distinct", detail: "This is the complete case library for the selected profile. Active, improving, and resolved concerns remain separate and easy to revisit." },
-    { page: "Case Summaries", selector: ".nav-item.active", eyebrow: "CASE SUMMARIES", title: "Prepare one case for a clinician", detail: "Choose a case, review the generated summary, edit the wording, and control which sections are included before you decide to share anything." },
-    { sidebar: true, selector: ".privacy-settings-link", eyebrow: "PRIVACY", title: "You stay in control", detail: "Open account and privacy settings whenever you need to manage session security, photo privacy, summary-link expiry, or sign out." },
+    { page: "Case Summaries", selector: ".nav-item.active", eyebrow: "CASE SUMMARIES", title: "Prepare one case for a clinician", detail: "Choose a case and review the summary written from that case’s timeline. You can edit the wording here. Trace does not send or share it." },
+    { sidebar: true, selector: ".privacy-settings-link", eyebrow: "PRIVACY", title: "You stay in control", detail: "Open account and privacy settings to manage session security, photo privacy, or sign out. Summaries, patterns, and photos stay on this device." },
   ];
   const [stepIndex, setStepIndex] = useState(0);
   const [spotlight, setSpotlight] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
@@ -816,23 +956,56 @@ function NewCaseModal({ profile, onClose, onCreate }: { profile: Profile; onClos
   );
 }
 
-function LogModal({ profile, healthCase, onClose, onSave }: { profile: Profile; healthCase: HealthCase; onClose: () => void; onSave: (data: Partial<Episode>) => void }) {
+function LogModal({ profile, healthCase, stripPhotoMetadata, onClose, onSave }: { profile: Profile; healthCase: HealthCase; stripPhotoMetadata: boolean; onClose: () => void; onSave: (data: Partial<Episode>) => void }) {
   const [step, setStep] = useState(1);
   const [severity, setSeverity] = useState(5);
   const [notice, setNotice] = useState("");
   const [where, setWhere] = useState("");
-  const [changes, setChanges] = useState<string[]>(["Product"]);
+  const [changes, setChanges] = useState<string[]>([]);
   const [tried, setTried] = useState("");
+  const [notes, setNotes] = useState("");
   const [attachment, setAttachment] = useState<Episode["attachment"]>();
+  const [photoNote, setPhotoNote] = useState("");
   const [childNoteType, setChildNoteType] = useState<"observed" | "told">("observed");
   const fileRef = useRef<HTMLInputElement>(null);
   const toggle = (item: string) => setChanges((current) => current.includes(item) ? current.filter((x) => x !== item) : [...current, item]);
-  const attachPhoto = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const attachPhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setAttachment({ name: file.name, url: String(reader.result) });
-    reader.readAsDataURL(file);
+    if (!stripPhotoMetadata) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setAttachment({ name: file.name, url: String(reader.result) });
+        setPhotoNote("");
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+    try {
+      const url = await stripImageMetadata(file);
+      const safeName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+      setAttachment({ name: safeName, url });
+      setPhotoNote("Location data was removed before this photo was saved on this device.");
+    } catch {
+      setAttachment(undefined);
+      setPhotoNote("That photo couldn’t be saved without its location data, so it was not attached.");
+    }
+  };
+  const saveEntry = () => {
+    const observation = notice.trim();
+    const note = notes.trim();
+    const source = profile.child ? (childNoteType === "told" ? `What ${profile.name} said` : "What I observed") : "";
+    const detail = source && note ? `${source}: ${note}` : source ? `${source}.` : note;
+    onSave({
+      title: observation || "New observation",
+      place: where.trim() || "Not specified",
+      severity,
+      tags: changes,
+      treatment: tried.trim() || "Nothing recorded",
+      detail,
+      attachment,
+    });
   };
   return (
     <div className="modal-layer">
@@ -845,10 +1018,10 @@ function LogModal({ profile, healthCase, onClose, onSave }: { profile: Profile; 
         <div className="progress"><span style={{ width: `${step * 33.333}%` }} /></div>
         <div className="modal-body">
           {step === 1 && <><span className="step-label">STEP 1 OF 3 · THE OBSERVATION</span><h2>What did you notice?</h2><p>Capture it in your own words. You can add detail as you go.</p>{profile.child && <div className="child-tabs"><button className={childNoteType === "observed" ? "active" : ""} onClick={() => setChildNoteType("observed")}>What I observed</button><button className={childNoteType === "told" ? "active" : ""} onClick={() => setChildNoteType("told")}>What they told me</button></div>}<label className="field"><span>{childNoteType === "told" ? `What did ${profile.name} tell you?` : "What did you notice?"}</span><textarea value={notice} onChange={(e) => setNotice(e.target.value)} placeholder={profile.child ? childNoteType === "told" ? `e.g. “It feels itchy and warm”` : "e.g. Red, dry patches that looked itchy" : "e.g. A dull headache that began after lunch"} /></label><label className="field"><span>Where?</span><input value={where} onChange={(e) => setWhere(e.target.value)} placeholder="e.g. Inside elbows" /></label><div className="field"><span>Severity <b>{severity}/10</b></span><div className="severity-scale">{Array.from({ length: 10 }, (_, i) => i + 1).map((n) => <button key={n} onClick={() => setSeverity(n)} className={severity === n ? "selected" : ""}>{n}</button>)}</div><div className="scale-labels"><span>Mild</span><span>Severe</span></div></div></>}
-          {step === 2 && <><span className="step-label">STEP 2 OF 3 · CONTEXT</span><h2>What changed recently?</h2><p>Choose anything that might help you spot a pattern later. Trace won’t assume it caused the episode.</p><div className="chip-grid">{["Product", "Medication", "Stress", "Sleep", "Diet", "Weather", "Activity", "Nothing I can think of"].map((item) => <button key={item} className={changes.includes(item) ? "select-chip selected" : "select-chip"} onClick={() => toggle(item)}>{changes.includes(item) && <Icon name="check" size={15} />}{item}</button>)}</div><label className="field"><span>What did you try?</span><input value={tried} onChange={(e) => setTried(e.target.value)} placeholder="e.g. Moisturizer, rest, medication" /></label><label className="field"><span>Notes <small>Optional</small></span><textarea placeholder="Anything else you want to remember?" /></label><button className={`photo-upload${attachment ? " attached" : ""}`} onClick={() => fileRef.current?.click()}><span><Icon name={attachment ? "paperclip" : "camera"} /></span><div><strong>{attachment ? "Photo attached" : `Add a photo to ${profile.name}’s history`}</strong><small>{attachment ? attachment.name : `Photos are stored with “${healthCase.title}” and appear on this timeline entry.`}</small></div><Icon name={attachment ? "check" : "plus"} /></button><input ref={fileRef} type="file" accept="image/*" onChange={attachPhoto} hidden /></>}
-          {step === 3 && <><span className="step-label">STEP 3 OF 3 · REVIEW</span><h2>Add this to “{healthCase.title}”?</h2><p>Check the details before adding them to this case.</p><div className="review-profile"><ProfileBadge profile={profile} /><div><strong>{healthCase.title}</strong><span>{profile.name} · Separate case history</span></div><Icon name="lock" /></div><div className="review-list"><div><span>OBSERVATION</span><strong>{notice || "Red, dry patches that looked itchy"}</strong></div><div><span>WHERE</span><strong>{where || "Inside elbows"}</strong></div><div><span>SEVERITY</span><Severity value={severity} /></div><div><span>RECENT CHANGES</span><strong>{changes.join(", ") || "None noted"}</strong></div><div><span>TRIED</span><strong>{tried || "Nothing recorded"}</strong></div></div><div className="safe-note"><Icon name="lock" size={18} />This entry will only belong to this case in {profile.name}’s history.</div></>}
+          {step === 2 && <><span className="step-label">STEP 2 OF 3 · CONTEXT</span><h2>What changed recently?</h2><p>Choose anything that might help you spot a pattern later. Trace won’t assume it caused the episode.</p><div className="chip-grid">{["Product", "Medication", "Stress", "Sleep", "Diet", "Weather", "Activity", "Nothing I can think of"].map((item) => <button key={item} className={changes.includes(item) ? "select-chip selected" : "select-chip"} onClick={() => toggle(item)}>{changes.includes(item) && <Icon name="check" size={15} />}{item}</button>)}</div><label className="field"><span>What did you try?</span><input value={tried} onChange={(e) => setTried(e.target.value)} placeholder="e.g. Moisturizer, rest, medication" /></label><label className="field"><span>Notes <small>Optional</small></span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything else you want to remember?" /></label><button className={`photo-upload${attachment ? " attached" : ""}`} onClick={() => fileRef.current?.click()}><span><Icon name={attachment ? "paperclip" : "camera"} /></span><div><strong>{attachment ? "Photo attached" : `Add a photo to ${profile.name}’s history`}</strong><small>{attachment ? attachment.name : `Photos stay with “${healthCase.title}” on this device.`}</small></div><Icon name={attachment ? "check" : "plus"} /></button>{photoNote && <p className="safe-note"><Icon name="lock" size={16} />{photoNote}</p>}<input ref={fileRef} type="file" accept="image/*" onChange={attachPhoto} hidden /></>}
+          {step === 3 && <><span className="step-label">STEP 3 OF 3 · REVIEW</span><h2>Add this to “{healthCase.title}”?</h2><p>Check the details before adding them to this case.</p><div className="review-profile"><ProfileBadge profile={profile} /><div><strong>{healthCase.title}</strong><span>{profile.name} · Separate case history</span></div><Icon name="lock" /></div><div className="review-list"><div><span>OBSERVATION</span><strong>{notice.trim() || "Not recorded"}</strong></div><div><span>WHERE</span><strong>{where.trim() || "Not specified"}</strong></div><div><span>SEVERITY</span><Severity value={severity} /></div><div><span>RECENT CHANGES</span><strong>{changes.join(", ") || "None noted"}</strong></div><div><span>TRIED</span><strong>{tried.trim() || "Nothing recorded"}</strong></div>{notes.trim() && <div><span>NOTES</span><strong>{notes.trim()}</strong></div>}</div><div className="safe-note"><Icon name="lock" size={18} />This entry stays in this case on this device. It is not sent anywhere.</div></>}
         </div>
-        <div className="modal-footer"><Button variant="ghost" onClick={onClose}>Save for later</Button><Button onClick={() => step < 3 ? setStep(step + 1) : onSave({ title: notice || "New observation", place: where || "Not specified", severity, tags: changes, treatment: tried || "Nothing recorded", attachment })}>{step === 3 ? <><Icon name="check" size={18} /> Add to Case</> : <>Continue <Icon name="arrow" size={17} /></>}</Button></div>
+        <div className="modal-footer"><Button variant="ghost" onClick={onClose}>Save for later</Button><Button onClick={() => step < 3 ? setStep(step + 1) : saveEntry()}>{step === 3 ? <><Icon name="check" size={18} /> Add to Case</> : <>Continue <Icon name="arrow" size={17} /></>}</Button></div>
       </div>
     </div>
   );
@@ -958,7 +1131,7 @@ export default function App() {
   };
   const saveEpisode = (data: Partial<Episode>) => {
     if (!loggingCase) return;
-    const episode: Episode = { id: Date.now(), caseId: loggingCase.id, date: "Just now", title: data.title!, place: data.place!, severity: data.severity!, detail: "New observation added from the logging flow.", tags: data.tags || [], treatment: data.treatment!, attachment: data.attachment };
+    const episode: Episode = { id: Date.now(), caseId: loggingCase.id, date: "Just now", title: data.title || "New observation", place: data.place || "Not specified", severity: data.severity ?? 0, detail: data.detail?.trim() || "", tags: data.tags || [], treatment: data.treatment || "Nothing recorded", attachment: data.attachment };
     setEpisodes((current) => ({ ...current, [active.id]: [episode, ...(current[active.id] || [])] }));
     const updatedCase = { ...loggingCase, updated: "Today", updatedOrder: Date.now(), entries: loggingCase.entries + 1 };
     setCases((current) => current.map((healthCase) => healthCase.id === loggingCase.id ? updatedCase : healthCase));
@@ -1026,9 +1199,9 @@ export default function App() {
       <Sidebar page={page} active={active} open={mobileMenu} onPage={navigate} onClose={() => setMobileMenu(false)} onProfile={() => setProfileMenu(true)} onPrivacy={() => setPrivacyOpen(true)} />
       <main className="main-content">
         {openedCase ? <CaseDetail profile={active} healthCase={openedCase} episodes={activeEpisodes} onBack={() => setOpenedCase(null)} onAdd={() => setLoggingCase(openedCase)} onPrepare={() => { setSummaryCase(openedCase); setOpenedCase(null); setPage("Case Summaries"); }} onRemove={() => setCaseToRemove(openedCase)} onDeleteEpisode={setEpisodeToDelete} onStatusChange={updateCaseStatus} /> : <>
-          {page === "Home" && <Home profile={active} accountName={account.name} cases={activeCases} onPage={navigate} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
+          {page === "Home" && <Home profile={active} accountName={account.name} cases={activeCases} episodes={activeEpisodes} onPage={navigate} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
           {page === "Timeline" && <Timeline profile={active} episodes={activeEpisodes} cases={activeCases} onLog={setLoggingCase} onNewCase={() => setNewCaseModal(true)} onDelete={setEpisodeToDelete} />}
-          {page === "Patterns" && <Patterns profile={active} cases={activeCases} onOpenCase={setOpenedCase} />}
+          {page === "Patterns" && <Patterns profile={active} cases={activeCases} episodes={activeEpisodes} onOpenCase={setOpenedCase} />}
           {page === "My Cases" && <History profile={active} cases={activeCases} onOpenCase={setOpenedCase} onNewCase={() => setNewCaseModal(true)} />}
           {page === "Case Summaries" && <CareSummary key={active.id} profile={active} allEpisodes={activeEpisodes} cases={activeCases} initialCase={summaryCase || undefined} />}
         </>}
@@ -1036,7 +1209,7 @@ export default function App() {
       {profileMenu && <ProfileMenu active={active} profiles={profileList} onSelect={selectProfile} onClose={() => setProfileMenu(false)} onAdd={() => { setProfileMenu(false); setAddProfile(true); }} />}
       {addProfile && <AddProfileModal onClose={() => setAddProfile(false)} onCreate={createProfile} />}
       {newCaseModal && <NewCaseModal profile={active} onClose={() => setNewCaseModal(false)} onCreate={createCase} />}
-      {loggingCase && <LogModal profile={active} healthCase={loggingCase} onClose={() => setLoggingCase(null)} onSave={saveEpisode} />}
+      {loggingCase && <LogModal profile={active} healthCase={loggingCase} stripPhotoMetadata={privacyPreferences.stripPhotoMetadata} onClose={() => setLoggingCase(null)} onSave={saveEpisode} />}
       {caseToRemove && <RemoveCaseModal healthCase={caseToRemove} onClose={() => setCaseToRemove(null)} onConfirm={removeCase} />}
       {episodeToDelete && <DeleteEpisodeModal episode={episodeToDelete} onClose={() => setEpisodeToDelete(null)} onConfirm={deleteEpisode} />}
       {privacyOpen && <PrivacySettingsModal account={account} preferences={privacyPreferences} onChange={changePrivacyPreference} onClose={() => setPrivacyOpen(false)} onSignOut={signOut} />}
