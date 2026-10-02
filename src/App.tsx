@@ -742,7 +742,7 @@ function AuthScreen({ lastEmail, onSignup, onLogin }: { lastEmail: string; onSig
   return (
     <main className="auth-shell">
       <section className="auth-intro">
-        <div className="auth-brand"><span className="brand-mark"><img src="/assets/trace-logo-pulse.svg" alt="" /></span><span className="brand-name">trace</span></div>
+        <div className="auth-brand"><span className="brand-mark"><img src={`${import.meta.env.BASE_URL}assets/trace-logo-pulse.svg`} alt="" /></span><span className="brand-name">trace</span></div>
         <div><span className="eyebrow">PRIVATE HEALTH HISTORIES</span><h1>Keep the details clear, private, and ready when they matter.</h1><p>Document recurring health concerns in separate cases for every person you care for.</p></div>
         <div className="auth-trust-list"><span><Icon name="lock" size={18} /><strong>Separate by profile</strong><small>Records never mix between people.</small></span><span><Icon name="care" size={18} /><strong>Stays on this device</strong><small>Summaries and patterns are never sent.</small></span></div>
       </section>
